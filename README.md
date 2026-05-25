@@ -140,11 +140,13 @@ hostinger-api-mcp --http
 hostinger-api-mcp --http --host 0.0.0.0 --port 8150
 ```
 
+The Streamable HTTP MCP endpoint is `/mcp`, for example `http://localhost:8100/mcp`.
+
 #### Command Line Options
 
 ```
 Options:
-  --http           Use HTTP streaming transport (requires HOSTINGER_API_TOKEN env var)
+  --http           Use HTTP streaming transport at /mcp (requires HOSTINGER_API_TOKEN env var)
   --stdio          Use Server-Sent Events transport (default)
   --host {host}    Hostname or IP address to listen on (default: 127.0.0.1)
   --port {port}    Port to bind to (default: 8100)
@@ -165,7 +167,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 // Create HTTP transport
 const transport = new StreamableHTTPClientTransport({
-  url: "http://localhost:8100/",
+  url: "http://localhost:8100/mcp",
   headers: {
     "Authorization": `Bearer ${process.env.HOSTINGER_API_TOKEN}`
   }
