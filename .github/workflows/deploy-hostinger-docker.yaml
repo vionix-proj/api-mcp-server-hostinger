@@ -1,0 +1,118 @@
+name: deploy-hostinger-docker
+
+on:
+  workflow_dispatch:
+    inputs:
+      virtual_machine_id:
+        description: Hostinger VPS virtual machine ID
+        required: false
+        default: "1422363"
+      project_name:
+        description: Hostinger Docker Manager project name
+        required: false
+        default: api-mcp-server-hostinger
+      hostinger_mcp_host:
+        description: Public hostname routed by the VPS Traefik project
+        required: false
+        default: hostinger-api-mcp.ohanalabs.cloud
+      debug:
+        description: Enable DEBUG inside the deployed container
+        required: false
+        default: "false"
+  workflow_run:
+    workflows:
+      - docker-image-cicd
+    branches:
+      - develop
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Hostinger Docker Manager
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    env:
+      HOSTINGER_API_TOKEN: ${{ secrets.HOSTINGER_API_TOKEN }}
+      HOSTINGER_VM_ID: ${{ inputs.virtual_machine_id || vars.HOSTINGER_VM_ID || '1422363' }}
+      HOSTINGER_PROJECT_NAME: ${{ inputs.project_name || vars.HOSTINGER_PROJECT_NAME || 'api-mcp-server-hostinger' }}
+      HOSTINGER_MCP_HOST: ${{ inputs.hostinger_mcp_host || vars.HOSTINGER_MCP_HOST || 'hostinger-api-mcp.ohanalabs.cloud' }}
+      DEBUG: ${{ inputs.debug || vars.HOSTINGER_MCP_DEBUG || 'false' }}
+      API_BASE_URL: ${{ vars.HOSTINGER_API_BASE_URL || 'https://developers.hostinger.com' }}
+      OAUTH_ISSUER: ${{ vars.HOSTINGER_OAUTH_ISSUER || 'https://auth.hostinger.com' }}
+      USER_AGENT: ${{ vars.HOSTINGER_MCP_USER_AGENT || 'api-mcp-server-hostinger-hostinger' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required secret
+        run: |
+          if [ -z "${HOSTINGER_API_TOKEN}" ]; then
+            echo "::error::Set the HOSTINGER_API_TOKEN repository secret before deploying."
+            exit 1
+          fi
+
+      - name: Validate compose syntax
+        run: |
+          cat > .env <<EOF
+          HOSTINGER_API_TOKEN=placeholder
+          HOSTINGER_MCP_HOST=${HOSTINGER_MCP_HOST}
+          DEBUG=${DEBUG}
+          API_BASE_URL=${API_BASE_URL}
+          OAUTH_ISSUER=${OAUTH_ISSUER}
+          USER_AGENT=${USER_AGENT}
+          EOF
+          docker compose --env-file .env -f docker-compose-hostinger.yaml config --quiet
+          rm -f .env
+
+      - name: Build Docker Manager environment
+        run: |
+          cat > hostinger.env <<EOF
+          NODE_ENV=production
+          HOSTINGER_API_TOKEN=${HOSTINGER_API_TOKEN}
+          HOSTINGER_MCP_HOST=${HOSTINGER_MCP_HOST}
+          DEBUG=${DEBUG}
+          API_BASE_URL=${API_BASE_URL}
+          OAUTH_ISSUER=${OAUTH_ISSUER}
+          USER_AGENT=${USER_AGENT}
+          EOF
+
+      - name: Deploy compose to Hostinger Docker Manager
+        run: |
+          jq -n \
+            --arg project_name "${HOSTINGER_PROJECT_NAME}" \
+            --rawfile content docker-compose-hostinger.yaml \
+            --rawfile environment hostinger.env \
+            '{project_name: $project_name, content: $content, environment: $environment}' > payload.json
+
+          http_status="$(curl -sS -o response.json -w "%{http_code}" \
+            -X POST "https://developers.hostinger.com/api/vps/v1/virtual-machines/${HOSTINGER_VM_ID}/docker" \
+            -H "Authorization: Bearer ${HOSTINGER_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @payload.json)"
+
+          rm -f payload.json hostinger.env
+
+          if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
+            echo "::error::Hostinger Docker Manager deployment failed with HTTP ${http_status}."
+            jq 'del(.content, .environment)' response.json 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Hostinger Docker Manager deployment accepted for project ${HOSTINGER_PROJECT_NAME} on VPS ${HOSTINGER_VM_ID}."
+
+      - name: Verify project status
+        run: |
+          http_status="$(curl -sS -o project.json -w "%{http_code}" \
+            -X GET "https://developers.hostinger.com/api/vps/v1/virtual-machines/${HOSTINGER_VM_ID}/docker/${HOSTINGER_PROJECT_NAME}" \
+            -H "Authorization: Bearer ${HOSTINGER_API_TOKEN}")"
+
+          if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
+            echo "::warning::Deployment succeeded, but project status check returned HTTP ${http_status}."
+            exit 0
+          fi
+
+          jq 'del(.content, .environment)' project.json

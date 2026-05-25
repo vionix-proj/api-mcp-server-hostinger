@@ -144,7 +144,16 @@ The Streamable HTTP MCP endpoint is `/mcp`, for example `http://localhost:8100/m
 
 #### Testing the Streamable HTTP endpoint with curl
 
-The Streamable HTTP transport requires the client to accept both \`application/json\` and \`text/event-stream\`. You can verify initialization with:
+The Streamable HTTP transport uses the \`/mcp\` endpoint, for example \`http://localhost:8100/mcp\`.
+
+When testing with \`curl\`, include both accepted response types:
+
+- \`application/json\`
+- \`text/event-stream\`
+
+If the \`Accept: application/json, text/event-stream\` header is missing, the MCP SDK may return \`406 Not Acceptable\`.
+
+##### 1. Initialize a Streamable HTTP MCP session
 
 \`\`\`bash
 $ curl -i http://127.0.0.1:8100/mcp \
@@ -168,7 +177,69 @@ event: message
 data: {"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"hostinger-api-mcp","version":"0.2.2"}},"jsonrpc":"2.0","id":0}
 \`\`\`
 
-A \`406 Not Acceptable\` response usually means the request is missing the required \`Accept: application/json, text/event-stream\` header.
+Copy the \`mcp-session-id\` response header value for follow-up requests:
+
+\`\`\`bash
+export SESSION_ID="9e5f8a03-4050-40de-b4ef-3e84a4efaa6b"
+\`\`\`
+
+##### 2. Send the initialized notification
+
+\`\`\`bash
+curl -i http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+\`\`\`
+
+A successful notification response is typically \`202 Accepted\`.
+
+##### 3. List available MCP tools
+
+\`\`\`bash
+curl -i http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+\`\`\`
+
+A successful response is returned as Server-Sent Events and contains a \`tools\` array:
+
+\`\`\`text
+HTTP/1.1 200 OK
+content-type: text/event-stream
+mcp-session-id: 9e5f8a03-4050-40de-b4ef-3e84a4efaa6b
+
+event: message
+data: {"result":{"tools":[{"id":"hosting_importWordpressWebsite","name":"hosting_importWordpressWebsite", ... }]},"jsonrpc":"2.0","id":1}
+\`\`\`
+
+##### Optional: extract only the JSON payload
+
+Because Streamable HTTP responses are returned as SSE, the JSON result appears on the \`data:\` line. To print only the JSON payload:
+
+\`\`\`bash
+curl -s http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p'
+\`\`\`
+
+If \`jq\` is installed, list only tool names:
+
+\`\`\`bash
+curl -s http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p' \
+  | jq -r '.result.tools[].name'
+\`\`\`
 
 
 #### Command Line Options
