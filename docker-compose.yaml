@@ -1,6 +1,6 @@
 services:
   api-mcp-server-hostinger:
-    image: vionix-proj/api-mcp-server-hostinger:latest
+    image: ghcr.io/vionix-proj/api-mcp-server-hostinger:main-e347d9b
     build:
       context: .
       dockerfile: Dockerfile
