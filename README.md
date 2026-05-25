@@ -142,6 +142,35 @@ hostinger-api-mcp --http --host 0.0.0.0 --port 8150
 
 The Streamable HTTP MCP endpoint is `/mcp`, for example `http://localhost:8100/mcp`.
 
+#### Testing the Streamable HTTP endpoint with curl
+
+The Streamable HTTP transport requires the client to accept both \`application/json\` and \`text/event-stream\`. You can verify initialization with:
+
+\`\`\`bash
+$ curl -i http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"test"}}}'
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, mcp-session-id, x-session-id
+Access-Control-Expose-Headers: Mcp-Session-Id, mcp-session-id
+cache-control: no-cache
+connection: keep-alive
+content-type: text/event-stream
+mcp-session-id: 9e5f8a03-4050-40de-b4ef-3e84a4efaa6b
+content-length: 177
+Date: Mon, 25 May 2026 04:24:18 GMT
+
+event: message
+data: {"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"hostinger-api-mcp","version":"0.2.2"}},"jsonrpc":"2.0","id":0}
+\`\`\`
+
+A \`406 Not Acceptable\` response usually means the request is missing the required \`Accept: application/json, text/event-stream\` header.
+
+
 #### Command Line Options
 
 ```
