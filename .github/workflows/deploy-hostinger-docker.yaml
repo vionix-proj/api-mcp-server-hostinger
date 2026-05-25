@@ -11,10 +11,22 @@ on:
         description: Hostinger Docker Manager project name
         required: false
         default: api-mcp-server-hostinger
-      hostinger_mcp_host:
-        description: Public hostname routed by the VPS Traefik project
+      domain:
+        description: Base domain/DNS zone for Traefik and Hostinger DNS A record
         required: false
-        default: hostinger-api-mcp.ohanalabs.cloud
+        default: ohanalabs.cloud
+      hostinger_subdomain:
+        description: Hostinger subdomain label used for Traefik and DNS A record
+        required: false
+        default: hostinger-api-mcp
+      dns_zone:
+        description: Hostinger DNS zone to update; defaults to DOMAIN
+        required: false
+        default: ""
+      dns_ttl:
+        description: TTL for the Hostinger DNS A record
+        required: false
+        default: "300"
       debug:
         description: Enable DEBUG inside the deployed container
         required: false
@@ -39,7 +51,10 @@ jobs:
       HOSTINGER_API_TOKEN: ${{ secrets.HOSTINGER_API_TOKEN }}
       HOSTINGER_VM_ID: ${{ inputs.virtual_machine_id || vars.HOSTINGER_VM_ID || '1422363' }}
       HOSTINGER_PROJECT_NAME: ${{ inputs.project_name || vars.HOSTINGER_PROJECT_NAME || 'api-mcp-server-hostinger' }}
-      HOSTINGER_MCP_HOST: ${{ inputs.hostinger_mcp_host || vars.HOSTINGER_MCP_HOST || 'hostinger-api-mcp.ohanalabs.cloud' }}
+      DOMAIN: ${{ inputs.domain || vars.DOMAIN || 'ohanalabs.cloud' }}
+      HOSTINGER_SUBDOMAIN: ${{ inputs.hostinger_subdomain || vars.HOSTINGER_SUBDOMAIN || 'hostinger-api-mcp' }}
+      HOSTINGER_DNS_ZONE: ${{ inputs.dns_zone || vars.HOSTINGER_DNS_ZONE }}
+      HOSTINGER_DNS_TTL: ${{ inputs.dns_ttl || vars.HOSTINGER_DNS_TTL || '300' }}
       DEBUG: ${{ inputs.debug || vars.HOSTINGER_MCP_DEBUG || 'false' }}
       API_BASE_URL: ${{ vars.HOSTINGER_API_BASE_URL || 'https://developers.hostinger.com' }}
       OAUTH_ISSUER: ${{ vars.HOSTINGER_OAUTH_ISSUER || 'https://auth.hostinger.com' }}
@@ -54,11 +69,83 @@ jobs:
             echo "::error::Set the HOSTINGER_API_TOKEN repository secret before deploying."
             exit 1
           fi
+      - name: Validate domain inputs
+        run: |
+          base_domain="${DOMAIN%.}"
+          subdomain="${HOSTINGER_SUBDOMAIN%.}"
+          dns_zone="${HOSTINGER_DNS_ZONE%.}"
+
+          if [ -z "${base_domain}" ]; then
+            echo "::error::DOMAIN is required and must be the base domain, for example ohanalabs.cloud."
+            exit 1
+          fi
+
+          if [[ "${base_domain}" == *"://"* ]] || [[ "${base_domain}" == */* ]] || [[ "${base_domain}" == *" "* ]]; then
+            echo "::error::DOMAIN must be a domain name only, not a URL or path."
+            exit 1
+          fi
+
+          if [[ ! "${base_domain}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]]; then
+            echo "::error::DOMAIN must be a valid base domain, for example ohanalabs.cloud."
+            exit 1
+          fi
+
+          if [ -z "${subdomain}" ]; then
+            echo "::error::HOSTINGER_SUBDOMAIN is required and must be a single DNS label, for example hostinger-api-mcp."
+            exit 1
+          fi
+
+          if [[ ! "${subdomain}" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]; then
+            echo "::error::HOSTINGER_SUBDOMAIN must be a single DNS label without dots, for example hostinger-api-mcp."
+            exit 1
+          fi
+
+          if [ -z "${dns_zone}" ]; then
+            dns_zone="${base_domain}"
+          fi
+
+          if [[ "${dns_zone}" == *"://"* ]] || [[ "${dns_zone}" == */* ]] || [[ "${dns_zone}" == *" "* ]]; then
+            echo "::error::HOSTINGER_DNS_ZONE must be a domain name only, not a URL or path."
+            exit 1
+          fi
+
+          if [[ ! "${dns_zone}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$ ]]; then
+            echo "::error::HOSTINGER_DNS_ZONE must be a valid DNS zone."
+            exit 1
+          fi
+
+          fqdn="${subdomain}.${base_domain}"
+
+          if [[ "${fqdn}" != *".${dns_zone}" ]]; then
+            echo "::error::The generated hostname (${fqdn}) must be inside HOSTINGER_DNS_ZONE (${dns_zone})."
+            exit 1
+          fi
+
+          if [[ ! "${HOSTINGER_DNS_TTL}" =~ ^[0-9]+$ ]] || [ "${HOSTINGER_DNS_TTL}" -le 0 ]; then
+            echo "::error::HOSTINGER_DNS_TTL must be a positive integer."
+            exit 1
+          fi
+
+          traefik_rule="$(grep -E 'traefik\.http\.routers\.api-mcp-server-hostinger\.rule=Host' docker-compose-hostinger.yaml || true)"
+
+          if [[ "${traefik_rule}" != *"HOSTINGER_SUBDOMAIN"* ]] || [[ "${traefik_rule}" != *"DOMAIN"* ]]; then
+            echo "::error::docker-compose-hostinger.yaml Traefik Host rule must include HOSTINGER_SUBDOMAIN and DOMAIN."
+            exit 1
+          fi
+
+          {
+            printf 'DOMAIN=%s\n' "${base_domain}"
+            printf 'HOSTINGER_SUBDOMAIN=%s\n' "${subdomain}"
+            printf 'HOSTINGER_MCP_HOST=%s\n' "${fqdn}"
+            printf 'HOSTINGER_DNS_ZONE=%s\n' "${dns_zone}"
+          } >> "${GITHUB_ENV}"
 
       - name: Validate compose syntax
         run: |
           cat > .env <<EOF
           HOSTINGER_API_TOKEN=placeholder
+          DOMAIN=${DOMAIN}
+          HOSTINGER_SUBDOMAIN=${HOSTINGER_SUBDOMAIN}
           HOSTINGER_MCP_HOST=${HOSTINGER_MCP_HOST}
           DEBUG=${DEBUG}
           API_BASE_URL=${API_BASE_URL}
@@ -73,6 +160,8 @@ jobs:
           cat > hostinger.env <<EOF
           NODE_ENV=production
           HOSTINGER_API_TOKEN=${HOSTINGER_API_TOKEN}
+          DOMAIN=${DOMAIN}
+          HOSTINGER_SUBDOMAIN=${HOSTINGER_SUBDOMAIN}
           HOSTINGER_MCP_HOST=${HOSTINGER_MCP_HOST}
           DEBUG=${DEBUG}
           API_BASE_URL=${API_BASE_URL}
@@ -116,3 +205,72 @@ jobs:
           fi
 
           jq 'del(.content, .environment)' project.json
+
+      - name: Resolve VPS IPv4 address
+        id: vps
+        run: |
+          http_status="$(curl -sS -o vm.json -w "%{http_code}" \
+            -X GET "https://developers.hostinger.com/api/vps/v1/virtual-machines/${HOSTINGER_VM_ID}" \
+            -H "Authorization: Bearer ${HOSTINGER_API_TOKEN}")"
+
+          if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
+            echo "::error::Unable to read VPS ${HOSTINGER_VM_ID} details for DNS A record creation. HTTP ${http_status}."
+            exit 1
+          fi
+
+          vps_ipv4="$(jq -r '.ipv4[0].address // empty' vm.json)"
+          rm -f vm.json
+
+          if [ -z "${vps_ipv4}" ]; then
+            echo "::error::VPS ${HOSTINGER_VM_ID} has no IPv4 address in the Hostinger API response."
+            exit 1
+          fi
+
+          printf 'ipv4=%s\n' "${vps_ipv4}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update Hostinger DNS A record
+        run: |
+          fqdn="${HOSTINGER_MCP_HOST%.}"
+
+          dns_zone="${HOSTINGER_DNS_ZONE%.}"
+          record_name="${fqdn%.$dns_zone}"
+
+          if [ "${record_name}" = "${fqdn}" ]; then
+            echo "::error::Generated hostname (${fqdn}) must be inside HOSTINGER_DNS_ZONE (${dns_zone})."
+            exit 1
+          fi
+
+          jq -n \
+            --arg name "${record_name}" \
+            --arg content "${{ steps.vps.outputs.ipv4 }}" \
+            --argjson ttl "${HOSTINGER_DNS_TTL}" \
+            '{overwrite: true, zone: [{name: $name, type: "A", ttl: $ttl, records: [{content: $content}]}]}' > dns-record.json
+
+          validate_status="$(curl -sS -o dns-validate-response.json -w "%{http_code}" \
+            -X POST "https://developers.hostinger.com/api/dns/v1/zones/${dns_zone}/validate" \
+            -H "Authorization: Bearer ${HOSTINGER_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @dns-record.json)"
+
+          if [ "${validate_status}" -lt 200 ] || [ "${validate_status}" -ge 300 ]; then
+            echo "::error::Hostinger DNS A record validation failed for ${fqdn} -> ${{ steps.vps.outputs.ipv4 }}. HTTP ${validate_status}."
+            jq '.' dns-validate-response.json 2>/dev/null || true
+            exit 1
+          fi
+
+          update_status="$(curl -sS -o dns-update-response.json -w "%{http_code}" \
+            -X PUT "https://developers.hostinger.com/api/dns/v1/zones/${dns_zone}" \
+            -H "Authorization: Bearer ${HOSTINGER_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data-binary @dns-record.json)"
+
+          rm -f dns-record.json dns-validate-response.json
+
+          if [ "${update_status}" -lt 200 ] || [ "${update_status}" -ge 300 ]; then
+            echo "::error::Hostinger DNS A record update failed for ${fqdn} -> ${{ steps.vps.outputs.ipv4 }}. HTTP ${update_status}."
+            jq '.' dns-update-response.json 2>/dev/null || true
+            exit 1
+          fi
+
+          rm -f dns-update-response.json
+          echo "Hostinger DNS A record updated: ${fqdn} -> ${{ steps.vps.outputs.ipv4 }}"

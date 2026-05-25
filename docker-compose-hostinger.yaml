@@ -9,6 +9,9 @@ services:
       DEBUG: ${DEBUG:-false}
       HOST: 0.0.0.0
       PORT: 8100
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      HOSTINGER_SUBDOMAIN: ${HOSTINGER_SUBDOMAIN:?HOSTINGER_SUBDOMAIN is required}
+      HOSTINGER_MCP_HOST: ${HOSTINGER_SUBDOMAIN:?HOSTINGER_SUBDOMAIN is required}.${DOMAIN:?DOMAIN is required}
       API_BASE_URL: ${API_BASE_URL:-https://developers.hostinger.com}
       OAUTH_ISSUER: ${OAUTH_ISSUER:-https://auth.hostinger.com}
       USER_AGENT: ${USER_AGENT:-api-mcp-server-hostinger-hostinger}
@@ -33,7 +36,7 @@ services:
       start_period: 10s
     labels:
       - traefik.enable=true
-      - traefik.http.routers.api-mcp-server-hostinger.rule=Host(`${HOSTINGER_MCP_HOST:-hostinger-api-mcp.ohanalabs.cloud}`)
+      - traefik.http.routers.api-mcp-server-hostinger.rule=Host(`${HOSTINGER_SUBDOMAIN:?HOSTINGER_SUBDOMAIN is required}.${DOMAIN:?DOMAIN is required}`)
       - traefik.http.routers.api-mcp-server-hostinger.entrypoints=websecure
       - traefik.http.routers.api-mcp-server-hostinger.tls.certresolver=le
       - traefik.http.services.api-mcp-server-hostinger.loadbalancer.server.port=8100
