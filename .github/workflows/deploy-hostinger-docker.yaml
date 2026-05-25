@@ -22,8 +22,8 @@ on:
   workflow_run:
     workflows:
       - docker-image-cicd
-    branches:
-      - develop
+    # branches:
+    #   - develop
     types:
       - completed
 
