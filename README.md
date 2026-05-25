@@ -140,11 +140,113 @@ hostinger-api-mcp --http
 hostinger-api-mcp --http --host 0.0.0.0 --port 8150
 ```
 
+The Streamable HTTP MCP endpoint is `/mcp`, for example `http://localhost:8100/mcp`.
+
+#### Testing the Streamable HTTP endpoint with curl
+
+The Streamable HTTP transport uses the \`/mcp\` endpoint, for example \`http://localhost:8100/mcp\`.
+
+When testing with \`curl\`, include both accepted response types:
+
+- \`application/json\`
+- \`text/event-stream\`
+
+If the \`Accept: application/json, text/event-stream\` header is missing, the MCP SDK may return \`406 Not Acceptable\`.
+
+##### 1. Initialize a Streamable HTTP MCP session
+
+\`\`\`bash
+$ curl -i http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"curl","version":"test"}}}'
+HTTP/1.1 200 OK
+X-Powered-By: Express
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization, Mcp-Session-Id, mcp-session-id, x-session-id
+Access-Control-Expose-Headers: Mcp-Session-Id, mcp-session-id
+cache-control: no-cache
+connection: keep-alive
+content-type: text/event-stream
+mcp-session-id: 9e5f8a03-4050-40de-b4ef-3e84a4efaa6b
+content-length: 177
+Date: Mon, 25 May 2026 04:24:18 GMT
+
+event: message
+data: {"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"hostinger-api-mcp","version":"0.2.2"}},"jsonrpc":"2.0","id":0}
+\`\`\`
+
+Copy the \`mcp-session-id\` response header value for follow-up requests:
+
+\`\`\`bash
+export SESSION_ID="9e5f8a03-4050-40de-b4ef-3e84a4efaa6b"
+\`\`\`
+
+##### 2. Send the initialized notification
+
+\`\`\`bash
+curl -i http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+\`\`\`
+
+A successful notification response is typically \`202 Accepted\`.
+
+##### 3. List available MCP tools
+
+\`\`\`bash
+curl -i http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+\`\`\`
+
+A successful response is returned as Server-Sent Events and contains a \`tools\` array:
+
+\`\`\`text
+HTTP/1.1 200 OK
+content-type: text/event-stream
+mcp-session-id: 9e5f8a03-4050-40de-b4ef-3e84a4efaa6b
+
+event: message
+data: {"result":{"tools":[{"id":"hosting_importWordpressWebsite","name":"hosting_importWordpressWebsite", ... }]},"jsonrpc":"2.0","id":1}
+\`\`\`
+
+##### Optional: extract only the JSON payload
+
+Because Streamable HTTP responses are returned as SSE, the JSON result appears on the \`data:\` line. To print only the JSON payload:
+
+\`\`\`bash
+curl -s http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p'
+\`\`\`
+
+If \`jq\` is installed, list only tool names:
+
+\`\`\`bash
+curl -s http://127.0.0.1:8100/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H "mcp-session-id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | sed -n 's/^data: //p' \
+  | jq -r '.result.tools[].name'
+\`\`\`
+
+
 #### Command Line Options
 
 ```
 Options:
-  --http           Use HTTP streaming transport (requires HOSTINGER_API_TOKEN env var)
+  --http           Use HTTP streaming transport at /mcp (requires HOSTINGER_API_TOKEN env var)
   --stdio          Use Server-Sent Events transport (default)
   --host {host}    Hostname or IP address to listen on (default: 127.0.0.1)
   --port {port}    Port to bind to (default: 8100)
@@ -165,7 +267,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 // Create HTTP transport
 const transport = new StreamableHTTPClientTransport({
-  url: "http://localhost:8100/",
+  url: "http://localhost:8100/mcp",
   headers: {
     "Authorization": `Bearer ${process.env.HOSTINGER_API_TOKEN}`
   }

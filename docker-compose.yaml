@@ -1,0 +1,34 @@
+services:
+  api-mcp-server-hostinger:
+    image: vionix-proj/api-mcp-server-hostinger:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      DEBUG: ${DEBUG:-true}
+      HOSTINGER_API_TOKEN: ${HOSTINGER_API_TOKEN:-}
+      API_BASE_URL: ${API_BASE_URL:-https://developers.hostinger.com}
+      OAUTH_ISSUER: ${OAUTH_ISSUER:-https://auth.hostinger.com}
+      USER_AGENT: ${USER_AGENT:-api-mcp-server-hostinger-docker}
+    command:
+      - node
+      - src/servers/all.js
+      - --http
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8100"
+    ports:
+      - "8100:8100"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8100/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

@@ -10,11 +10,13 @@ import { config as dotenvConfig } from "dotenv";
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import { OAuthProvider, getEnvToken } from "./oauth.js";
 import * as tus from "tus-js-client";
 import fs from "fs";
 import path from "path";
+import { randomUUID } from "node:crypto";
 
 // Load environment variables
 dotenvConfig();
@@ -47,21 +49,10 @@ class MCPServer {
     // Initialize tools map - do this before creating server
     this.initializeTools();
 
-    // Create MCP server with correct capabilities
-    this.server = new Server(
-      {
-        name: this.name,
-        version: this.version,
-      },
-      {
-        capabilities: {
-          tools: {}, // Enable tools capability
-        },
-      }
-    );
-
-    // Set up request handlers - don't log here
-    this.setupHandlers();
+    // Create the stdio/default MCP server. HTTP Streamable sessions create
+    // their own Server instances so each client initializes at the MCP layer
+    // independently.
+    this.server = this.createMcpServer();
   }
 
   /**
@@ -113,11 +104,36 @@ class MCPServer {
   }
 
   /**
+   * Create an MCP server instance with all request handlers registered.
+   *
+   * Streamable HTTP initializes at the client/session level, so HTTP mode must
+   * use one MCP Server instance per session. Reusing one Server instance across
+   * multiple HTTP sessions causes "Server already initialized" on repeated
+   * client initialize requests.
+   */
+  createMcpServer() {
+    const server = new Server(
+      {
+        name: this.name,
+        version: this.version,
+      },
+      {
+        capabilities: {
+          tools: {}, // Enable tools capability
+        },
+      }
+    );
+
+    this.setupHandlers(server);
+    return server;
+  }
+
+  /**
    * Set up request handlers
    */
-  setupHandlers() {
+  setupHandlers(server) {
     // Handle tool listing requests
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    server.setRequestHandler(ListToolsRequestSchema, async () => {
       this.log('debug', "Handling ListTools request");
       // Return tools in the format expected by MCP SDK
       return {
@@ -129,7 +145,7 @@ class MCPServer {
     });
 
     // Handle tool execution requests
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { id, name, arguments: params } = request.params;
       this.log('debug', "Handling CallTool request", { id, name, params });
 
@@ -1996,44 +2012,123 @@ class MCPServer {
   async startHttp(host, port) {
     try {
       const app = this.createApp();
-
-      // Create HTTP transport with session management
-      const httpTransport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => {
-          // Generate a simple session ID
-          return `session-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-        },
-      });
+      const transports = {};
 
       // Set up CORS for all routes
-      app.options("*", (req, res) => {
+      app.options("*", (_req, res) => {
         res.header("Access-Control-Allow-Origin", "*");
-        res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-session-id");
+        res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+        res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, mcp-session-id, x-session-id");
+        res.header("Access-Control-Expose-Headers", "Mcp-Session-Id, mcp-session-id");
         res.sendStatus(200);
       });
 
       // Health check endpoint
-      app.get("/health", (req, res) => {
-        res.status(200).json({ status: "ok", transport: "http" });
+      app.get("/health", (_req, res) => {
+        res.status(200).json({
+          status: "ok",
+          transport: "http",
+          endpoint: "/mcp",
+          sessions: Object.keys(transports).length,
+        });
       });
 
-      // Set up the HTTP transport endpoint
-      app.post("/", async (req, res) => {
+      const setMcpCorsHeaders = (res) => {
         res.header("Access-Control-Allow-Origin", "*");
-        res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-session-id");
-        await httpTransport.handleRequest(req, res, req.body);
+        res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+        res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id, mcp-session-id, x-session-id");
+        res.header("Access-Control-Expose-Headers", "Mcp-Session-Id, mcp-session-id");
+      };
+
+      const sendInvalidSessionResponse = (res) => {
+        if (res.headersSent) {
+          return;
+        }
+
+        res.status(400).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Bad Request: No valid MCP session ID provided",
+          },
+          id: null,
+        });
+      };
+
+      const handleStreamableHttpRequest = async (req, res, body) => {
+        setMcpCorsHeaders(res);
+
+        try {
+          const sessionId = req.headers["mcp-session-id"];
+          let transport;
+
+          if (sessionId && transports[sessionId]) {
+            transport = transports[sessionId];
+          } else if (!sessionId && isInitializeRequest(req.body)) {
+            transport = new StreamableHTTPServerTransport({
+              sessionIdGenerator: () => randomUUID(),
+              onsessioninitialized: (newSessionId) => {
+                if (transport) {
+                  transports[newSessionId] = transport;
+                }
+              },
+            });
+
+            transport.onclose = () => {
+              if (transport?.sessionId) {
+                delete transports[transport.sessionId];
+              }
+            };
+
+            // Important: MCP initialization is client/session-scoped. Do not
+            // connect the shared stdio Server instance here, or the next HTTP
+            // client's initialize request can fail with "Server already
+            // initialized".
+            const sessionServer = this.createMcpServer();
+            await sessionServer.connect(transport);
+          } else {
+            sendInvalidSessionResponse(res);
+            return;
+          }
+
+          await transport.handleRequest(req, res, body);
+        } catch (error) {
+          console.error("Failed to handle MCP HTTP request:", error);
+          if (!res.headersSent) {
+            res.status(500).json({
+              jsonrpc: "2.0",
+              error: {
+                code: -32603,
+                message: "Internal server error",
+              },
+              id: null,
+            });
+          }
+        }
+      };
+
+      // Primary Streamable HTTP MCP endpoint.
+      app.post("/mcp", async (req, res) => {
+        await handleStreamableHttpRequest(req, res, req.body);
       });
 
-      // Start the server
-      const server = app.listen(port, host, () => {
-        this.log('info', `MCP Server with HTTP streaming transport started successfully with ${this.tools.size} tools`);
-        this.log('info', `Listening on http://${host}:${port}`);
+      app.get("/mcp", async (req, res) => {
+        await handleStreamableHttpRequest(req, res);
       });
 
-      // Connect the MCP server to the transport
-      await this.server.connect(httpTransport);
+      app.delete("/mcp", async (req, res) => {
+        await handleStreamableHttpRequest(req, res);
+      });
+
+      // Backward-compatible alias for older configs that pointed at "/".
+      app.post("/", async (req, res) => {
+        await handleStreamableHttpRequest(req, res, req.body);
+      });
+
+      app.listen(port, host, () => {
+        this.log("info", `MCP Server with HTTP streaming transport started successfully with ${this.tools.size} tools`);
+        this.log("info", `Listening on http://${host}:${port}/mcp`);
+      });
 
     } catch (error) {
       console.error("Failed to start MCP server:", error);
@@ -2075,7 +2170,7 @@ export async function startServer({ name, version, tools }) {
       ${name}
       Usage: ${name} [options]
       Options:
-        --http               Use HTTP streaming transport (requires HOSTINGER_API_TOKEN env var)
+        --http               Use HTTP streaming transport at /mcp (requires HOSTINGER_API_TOKEN env var)
         --stdio              Use standard input/output transport (default)
         --host <host>        Host to bind to (default: 127.0.0.1)
         --port <port>        Port to bind to (default: 8100)
